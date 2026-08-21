@@ -185,7 +185,7 @@ const emailRef = db.ref('emails');
 const lastCopiedRef = db.ref('lastCopied');
 const copyLogsRef = db.ref('copyLogs');
 
-let emailList = [];
+let emailMap = {}; // { key: email } — mỗi mail là 1 node riêng để giành atomic, chống trùng khi nhiều máy bấm cùng lúc
 let isDuplicateToast = false;
 
 let deviceId = localStorage.getItem('deviceId');
@@ -209,7 +209,66 @@ function extractEmails(text) {
 }
 
 function updateCount() {
-  document.getElementById('count').textContent = `📊 Số email còn lại: ${emailList.length}`;
+  document.getElementById('count').textContent = `📊 Số email còn lại: ${Object.keys(emailMap).length}`;
+}
+
+// Chuyển đổi 1 lần dữ liệu cũ (mảng) sang dạng map { key: email } để giành mail
+// theo từng node riêng biệt — atomic, không còn tranh chấp trên 1 node duy nhất.
+function migrateAndListen() {
+  emailRef.transaction(current => {
+    if (Array.isArray(current)) {
+      const map = {};
+      current.forEach(email => {
+        if (email) {
+          const key = emailRef.push().key;
+          map[key] = email;
+        }
+      });
+      return map;
+    }
+    return current; // đã là map (hoặc rỗng) thì giữ nguyên
+  }, () => {
+    emailRef.on('value', snapshot => {
+      const data = snapshot.val();
+      emailMap = (data && typeof data === 'object' && !Array.isArray(data)) ? data : {};
+      updateCount();
+    });
+  });
+}
+
+function transactionAsync(ref, updater) {
+  return new Promise((resolve, reject) => {
+    ref.transaction(updater, (error, committed, snapshot) => {
+      if (error) reject(error);
+      else resolve({ committed, snapshot });
+    });
+  });
+}
+
+// Giành đúng 1 mail: mỗi mail là 1 node riêng nên transaction trên node đó
+// chỉ có đúng 1 client thắng, dù bao nhiêu máy cùng bấm 1 lúc.
+async function claimOneEmail() {
+  const triedKeys = new Set();
+  while (true) {
+    const availableKeys = Object.keys(emailMap).filter(k => !triedKeys.has(k));
+    if (availableKeys.length === 0) return null;
+    const key = availableKeys[Math.floor(Math.random() * availableKeys.length)];
+    triedKeys.add(key);
+
+    let claimedValue = null;
+    const { committed } = await transactionAsync(emailRef.child(key), cur => {
+      if (cur === null || cur === undefined) {
+        claimedValue = null;
+        return; // node đã bị máy khác giành trước — hủy, thử node khác
+      }
+      claimedValue = cur;
+      return null; // xóa node = giành được mail này
+    });
+
+    if (committed && claimedValue) {
+      return { key, email: claimedValue };
+    }
+  }
 }
 
 function showToast(msg, isError = false, isSuccess = false, isWarning = false, duration = 10000, persistent = false) {
@@ -268,11 +327,7 @@ function fallbackCopy(text) {
   document.body.removeChild(textarea);
 }
 
-emailRef.on('value', snapshot => {
-  const data = snapshot.val();
-  emailList = data ? data : [];
-  updateCount();
-});
+migrateAndListen();
 
 document.getElementById('addListButton').addEventListener('click', () => {
   const input = document.getElementById('emailListInput').value.trim();
@@ -281,22 +336,28 @@ document.getElementById('addListButton').addEventListener('click', () => {
     showToast('⚠️ Không có email hợp lệ để thêm.', true);
     return;
   }
-  emailRef.transaction(currentList => {
-    const updatedList = currentList ? currentList.slice() : [];
+  let addedCount = 0;
+  emailRef.transaction(current => {
+    const map = (current && typeof current === 'object' && !Array.isArray(current)) ? Object.assign({}, current) : {};
+    const existing = new Set(Object.values(map));
+    addedCount = 0;
     filteredEmails.forEach(email => {
-      if (!updatedList.includes(email)) {
-        updatedList.push(email);
+      if (!existing.has(email)) {
+        const key = emailRef.push().key;
+        map[key] = email;
+        existing.add(email);
+        addedCount++;
       }
     });
-    return updatedList;
+    return map;
   }, (error, committed, snapshot) => {
     if (error || !committed) {
       showToast('⚠️ Không thể thêm email.', true);
     } else {
-      const updatedList = snapshot.val() ? snapshot.val() : [];
-      showToast(`✅ Đã thêm ${filteredEmails.length} email hợp lệ, tổng: ${updatedList.length}.`, false, true);
+      const updatedMap = snapshot.val() || {};
+      showToast(`✅ Đã thêm ${addedCount} email hợp lệ, tổng: ${Object.keys(updatedMap).length}.`, false, true);
       document.getElementById('emailListInput').value = '';
-      emailList = updatedList;
+      emailMap = updatedMap;
       updateCount();
     }
   });
@@ -304,12 +365,12 @@ document.getElementById('addListButton').addEventListener('click', () => {
 
 document.getElementById('deleteListButton').addEventListener('click', () => {
   if (!confirm("Bạn có chắc muốn xóa toàn bộ danh sách email?")) return;
-  emailRef.set([], (error) => {
+  emailRef.set(null, (error) => {
     if (error) {
       showToast('⚠️ Lỗi khi xóa danh sách.', true);
     } else {
       showToast('✅ Đã xóa toàn bộ danh sách email.', false, true);
-      emailList = [];
+      emailMap = {};
       updateCount();
     }
   });
@@ -347,50 +408,36 @@ function onCopyEmail(email) {
   });
 }
 
-document.getElementById('copyButton').addEventListener('click', () => {
+document.getElementById('copyButton').addEventListener('click', async () => {
   resetBody();
   hideToast();
   const copyButton = document.getElementById('copyButton');
   copyButton.disabled = true;
   copyButton.textContent = "⏳ Đang xử lý...";
 
-  if (emailList.length === 0) {
-    showToast('⚠️ Danh sách đã hết email.', true);
+  try {
+    const claimed = await claimOneEmail();
+    if (!claimed) {
+      showToast('⚠️ Danh sách đã hết email.', true);
+      return;
+    }
+    const { email } = claimed;
+    copyText(email);
+    document.getElementById('emailOutput').value = email;
+    lastCopiedRef.set({ email, time: Date.now(), deviceId });
+
+    // ✅ Chỉ khi giành mail thành công mới đổi nền xanh
+    resetBody();
+    document.body.classList.add('success-mode');
+    showToast(`✅ Đã lấy & copy: ${email}`, false, true);
+
+    onCopyEmail(email);
+  } catch (e) {
+    showToast('⚠️ Lỗi khi lấy email.', true);
+  } finally {
     copyButton.disabled = false;
     copyButton.textContent = "📋 Lấy & Copy Email";
-    return;
   }
-
-  const randomIndex = Math.floor(Math.random() * emailList.length);
-  const email = emailList[randomIndex];
-  copyText(email);
-
-  emailRef.transaction(currentList => {
-    if (!currentList) return null;
-    const idx = currentList.indexOf(email);
-    if (idx !== -1) {
-      currentList.splice(idx, 1);
-    }
-    return currentList;
-  }, (error, committed, snapshot) => {
-    if (error) {
-      showToast('⚠️ Lỗi khi xóa email.', true);
-    } else if (committed) {
-      document.getElementById('emailOutput').value = email;
-      emailList = snapshot.val() || [];
-      updateCount();
-      lastCopiedRef.set({ email, time: Date.now(), deviceId });
-
-      // ✅ Chỉ khi transaction commit thành công mới đổi nền xanh
-      resetBody();
-      document.body.classList.add('success-mode');
-      showToast(`✅ Đã lấy & copy: ${email}`, false, true);
-
-      onCopyEmail(email);
-    }
-    copyButton.disabled = false;
-    copyButton.textContent = "📋 Lấy & Copy Email";
-  });
 });
 
 document.getElementById('clearLogsButton').addEventListener('click', () => {
