@@ -301,16 +301,24 @@ function resetBody() {
   document.body.classList.remove('success-mode', 'duplicate-mode', 'warning-mode');
 }
 
-function copyText(text) {
+// opts.manualFallbackHint = true: dùng khi copy tự động chạy SAU một bước chờ
+// mạng (giành mail xong mới copy) — lúc đó Safari/iOS có thể đã hết hạn "cử chỉ
+// người dùng" nên chặn cả clipboard API lẫn execCommand. Trường hợp này báo rõ
+// email đã lấy được an toàn, chỉ cần bấm nút 📋 thủ công (một cú chạm mới) để
+// copy, thay vì báo lỗi đỏ gây hoang mang.
+// Trả về true/false đã copy thành công hay chưa, để nơi gọi biết chắc kết quả
+// thật thay vì đoán qua toast (tránh 2 toast bất đồng bộ đè lên nhau).
+function copyText(text, opts = {}) {
   if (navigator.clipboard && window.isSecureContext) {
-    navigator.clipboard.writeText(text).then(() => {
-      // ✅ Chỉ hiển thị toast copy, không đổi màu nền ở đây
+    return navigator.clipboard.writeText(text).then(() => {
       showToast(`📋 Đang copy: ${text}`);
-    }).catch(() => fallbackCopy(text));
-  } else fallbackCopy(text);
+      return true;
+    }).catch(() => fallbackCopy(text, opts));
+  }
+  return Promise.resolve(fallbackCopy(text, opts));
 }
 
-function fallbackCopy(text) {
+function fallbackCopy(text, opts = {}) {
   const textarea = document.createElement("textarea");
   textarea.value = text;
   textarea.style.position = "fixed";
@@ -318,13 +326,28 @@ function fallbackCopy(text) {
   document.body.appendChild(textarea);
   textarea.focus();
   textarea.select();
+  let successful = false;
   try {
-    const successful = document.execCommand('copy');
-    showToast(successful ? `📋 Đang copy: ${text}` : '⚠️ Không thể copy.', !successful, successful);
+    successful = document.execCommand('copy');
+    if (successful) {
+      showToast(`📋 Đang copy: ${text}`, false, true);
+    } else if (opts.manualFallbackHint) {
+      // Safari/iOS có thể chặn copy tự động vì đã chờ mạng (giành mail) trước
+      // khi copy nên hết hạn "cử chỉ người dùng". Email vẫn lấy được an toàn,
+      // chỉ cần bấm nút 📋 (một cú chạm mới) là copy được.
+      showToast(`✅ Đã lấy: ${text} — Bấm nút 📋 để copy`, false, false, true);
+    } else {
+      showToast('⚠️ Không thể copy.', true);
+    }
   } catch {
-    showToast('⚠️ Lỗi khi copy.', true);
+    if (opts.manualFallbackHint) {
+      showToast(`✅ Đã lấy: ${text} — Bấm nút 📋 để copy`, false, false, true);
+    } else {
+      showToast('⚠️ Lỗi khi copy.', true);
+    }
   }
   document.body.removeChild(textarea);
+  return successful;
 }
 
 migrateAndListen();
@@ -422,14 +445,20 @@ document.getElementById('copyButton').addEventListener('click', async () => {
       return;
     }
     const { email } = claimed;
-    copyText(email);
     document.getElementById('emailOutput').value = email;
     lastCopiedRef.set({ email, time: Date.now(), deviceId });
 
-    // ✅ Chỉ khi giành mail thành công mới đổi nền xanh
+    // ✅ Giành mail thành công là chắc chắn, đổi nền xanh ngay
     resetBody();
     document.body.classList.add('success-mode');
-    showToast(`✅ Đã lấy & copy: ${email}`, false, true);
+
+    // Chờ biết chắc copy có thành công không rồi mới quyết định toast cuối
+    // cùng — tránh trường hợp toast "đã copy" bị toast lỗi copy (bất đồng bộ,
+    // chạy sau) đè mất.
+    const copied = await copyText(email, { manualFallbackHint: true });
+    if (copied) {
+      showToast(`✅ Đã lấy & copy: ${email}`, false, true);
+    }
 
     onCopyEmail(email);
   } catch (e) {
