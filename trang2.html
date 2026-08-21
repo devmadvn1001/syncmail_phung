@@ -2,11 +2,24 @@
 <html lang="vi">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"/>
   <title>Quản lý Email Online - Giữ Nguyên</title>
   <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-database-compat.js"></script>
   <style>
+    /* 🔒 Khóa zoom: chặn pinch-zoom, double-tap zoom và tự động phóng chữ */
+    html {
+      -webkit-text-size-adjust: 100%;
+      text-size-adjust: 100%;
+      touch-action: pan-x pan-y;
+    }
+    html, body {
+      touch-action: pan-x pan-y;
+      overscroll-behavior: none;
+    }
+    button, input, textarea, a {
+      touch-action: manipulation; /* chặn double-tap zoom nhưng vẫn bấm nhanh được */
+    }
     body {
       font-family: sans-serif;
       background: #9e9e9e; /* xám mặc định */
@@ -267,6 +280,42 @@ document.getElementById('switchMailButton').addEventListener('click', () => {
 document.getElementById("switchPage").addEventListener("click", () => {
   window.location.href = "index.html";
 });
+</script>
+<script>
+// 🔒 Khóa zoom trên mọi thiết bị (pinch, double-tap, Ctrl + cuộn, Ctrl +/-/0)
+(function () {
+  // Safari iOS: chặn cử chỉ pinch-zoom
+  ['gesturestart', 'gesturechange', 'gestureend'].forEach(function (evt) {
+    document.addEventListener(evt, function (e) { e.preventDefault(); }, { passive: false });
+  });
+
+  // Chặn pinch-zoom bằng nhiều ngón trên màn hình cảm ứng
+  document.addEventListener('touchmove', function (e) {
+    if (e.touches.length > 1) e.preventDefault();
+  }, { passive: false });
+
+  // Chặn double-tap zoom (bỏ qua nút/ô nhập để không chặn thao tác bấm nhanh)
+  var lastTouchEnd = 0;
+  document.addEventListener('touchend', function (e) {
+    var now = Date.now();
+    var el = e.target.closest ? e.target.closest('button, input, textarea, a, [contenteditable]') : null;
+    if (!el && now - lastTouchEnd <= 300) e.preventDefault();
+    lastTouchEnd = now;
+  }, { passive: false });
+
+  // Chặn zoom bằng Ctrl/Cmd + cuộn chuột
+  document.addEventListener('wheel', function (e) {
+    if (e.ctrlKey || e.metaKey) e.preventDefault();
+  }, { passive: false });
+
+  // Chặn zoom bằng bàn phím: Ctrl/Cmd với + - 0
+  document.addEventListener('keydown', function (e) {
+    if ((e.ctrlKey || e.metaKey) &&
+        ['+', '-', '=', '_', '0'].indexOf(e.key) !== -1) {
+      e.preventDefault();
+    }
+  }, { passive: false });
+})();
 </script>
 </body>
 </html>
