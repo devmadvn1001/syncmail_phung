@@ -431,15 +431,36 @@ function onCopyEmail(email) {
   });
 }
 
-document.getElementById('copyButton').addEventListener('click', async () => {
+document.getElementById('copyButton').addEventListener('click', () => {
   resetBody();
   hideToast();
   const copyButton = document.getElementById('copyButton');
   copyButton.disabled = true;
   copyButton.textContent = "⏳ Đang xử lý...";
 
-  try {
-    const claimed = await claimOneEmail();
+  const claimPromise = claimOneEmail();
+
+  // Mở lệnh ghi clipboard NGAY trong cử chỉ bấm (bắt buộc với Safari/iOS —
+  // clipboard chỉ được cấp quyền nếu lệnh write() gọi đồng bộ trong cú chạm).
+  // Dữ liệu thật (email) sẽ "rót" vào sau khi giành mail xong, qua Promise —
+  // Safari/Chrome hiện đại hỗ trợ ClipboardItem nhận dữ liệu tới muộn kiểu
+  // này mà vẫn tính là hành động hợp lệ trong cử chỉ người dùng. Nhờ vậy chỉ
+  // cần bấm đúng 1 lần, không cần bấm thêm nút 📋 thủ công.
+  let writePromise = null;
+  if (navigator.clipboard && window.isSecureContext && typeof ClipboardItem !== 'undefined') {
+    try {
+      const dataPromise = claimPromise.then(claimed => {
+        if (!claimed) throw new Error('no-email');
+        return new Blob([claimed.email], { type: 'text/plain' });
+      });
+      writePromise = navigator.clipboard.write([new ClipboardItem({ 'text/plain': dataPromise })]);
+      writePromise.catch(() => {}); // tránh cảnh báo unhandled rejection khi hết mail/không hỗ trợ
+    } catch (e) {
+      writePromise = null;
+    }
+  }
+
+  claimPromise.then(async claimed => {
     if (!claimed) {
       showToast('⚠️ Danh sách đã hết email.', true);
       return;
@@ -452,21 +473,24 @@ document.getElementById('copyButton').addEventListener('click', async () => {
     resetBody();
     document.body.classList.add('success-mode');
 
-    // Chờ biết chắc copy có thành công không rồi mới quyết định toast cuối
-    // cùng — tránh trường hợp toast "đã copy" bị toast lỗi copy (bất đồng bộ,
-    // chạy sau) đè mất.
-    const copied = await copyText(email, { manualFallbackHint: true });
+    // Ưu tiên kết quả copy "đồng bộ với cử chỉ" ở trên; chỉ khi trình duyệt
+    // không hỗ trợ hoặc thất bại thật sự mới rơi xuống copyText (có thể cần
+    // bấm 📋 thủ công trên các trình duyệt không hỗ trợ cách trên).
+    let copied = writePromise ? await writePromise.then(() => true).catch(() => false) : false;
     if (copied) {
       showToast(`✅ Đã lấy & copy: ${email}`, false, true);
+    } else {
+      copied = await copyText(email, { manualFallbackHint: true });
+      if (copied) showToast(`✅ Đã lấy & copy: ${email}`, false, true);
     }
 
     onCopyEmail(email);
-  } catch (e) {
+  }).catch(() => {
     showToast('⚠️ Lỗi khi lấy email.', true);
-  } finally {
+  }).finally(() => {
     copyButton.disabled = false;
     copyButton.textContent = "📋 Lấy & Copy Email";
-  }
+  });
 });
 
 document.getElementById('clearLogsButton').addEventListener('click', () => {
