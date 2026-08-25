@@ -98,7 +98,6 @@
       margin-top: 10px;
       padding: 12px; /* vẫn giữ nguyên chiều cao */
       cursor: default; /* không còn là nút bấm, chỉ hiển thị số liệu */
-      font-weight: bold;
     }
     #customToast {
       position: fixed;
@@ -163,7 +162,7 @@
 </div>
 
 <p id="count"></p>
-<button id="clearLogsButton">📊 Số Lượng Hôm Nay: 0</button>
+<button id="clearLogsButton">🗓️ Số Lượng Hôm Nay: 0</button>
 
 <button id="copyButton">📋 Lấy & Copy Email</button>
 <p id="output"></p>
@@ -293,7 +292,7 @@ function attachDailyAddCountListener() {
   dailyAddCountListenerKey = key;
   dailyAddCountRef.child(key).on('value', snapshot => {
     const count = snapshot.val() || 0;
-    document.getElementById('clearLogsButton').textContent = `📊 Số Lượng Hôm Nay: ${count}`;
+    document.getElementById('clearLogsButton').textContent = `🗓️ Số Lượng Hôm Nay: ${count}`;
   });
 }
 attachDailyAddCountListener();
