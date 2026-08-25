@@ -97,9 +97,8 @@
       max-width: 380px;
       margin-top: 10px;
       padding: 12px; /* vẫn giữ nguyên chiều cao */
-    }
-    #clearLogsButton:hover {
-      background: #e0a800;
+      cursor: default; /* không còn là nút bấm, chỉ hiển thị số liệu */
+      font-weight: bold;
     }
     #customToast {
       position: fixed;
@@ -164,7 +163,7 @@
 </div>
 
 <p id="count"></p>
-<button id="clearLogsButton">🧹 Clear Log Copy</button>
+<button id="clearLogsButton">📊 Số Lượng Hôm Nay: 0</button>
 
 <button id="copyButton">📋 Lấy & Copy Email</button>
 <p id="output"></p>
@@ -184,6 +183,7 @@ const db = firebase.database();
 const emailRef = db.ref('emails');
 const lastCopiedRef = db.ref('lastCopied');
 const copyLogsRef = db.ref('copyLogs');
+const dailyAddCountRef = db.ref('dailyAddCount');
 
 let emailMap = {}; // { key: email } — mỗi mail là 1 node riêng để giành atomic, chống trùng khi nhiều máy bấm cùng lúc
 let isDuplicateToast = false;
@@ -270,6 +270,35 @@ async function claimOneEmail() {
     }
   }
 }
+
+// "Ngày" tính theo giờ Việt Nam (UTC+7), reset lúc 3h sáng — không phụ thuộc
+// múi giờ đang cài trên từng điện thoại, để mọi máy thấy chung 1 số liệu.
+function getDailyKey() {
+  const VN_OFFSET_MS = 7 * 60 * 60 * 1000;
+  const RESET_HOUR_MS = 3 * 60 * 60 * 1000;
+  const shifted = new Date(Date.now() + VN_OFFSET_MS - RESET_HOUR_MS);
+  const y = shifted.getUTCFullYear();
+  const m = String(shifted.getUTCMonth() + 1).padStart(2, '0');
+  const d = String(shifted.getUTCDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+let dailyAddCountListenerKey = null;
+function attachDailyAddCountListener() {
+  const key = getDailyKey();
+  if (key === dailyAddCountListenerKey) return; // đã gắn đúng ngày rồi
+  if (dailyAddCountListenerKey) {
+    dailyAddCountRef.child(dailyAddCountListenerKey).off('value');
+  }
+  dailyAddCountListenerKey = key;
+  dailyAddCountRef.child(key).on('value', snapshot => {
+    const count = snapshot.val() || 0;
+    document.getElementById('clearLogsButton').textContent = `📊 Số Lượng Hôm Nay: ${count}`;
+  });
+}
+attachDailyAddCountListener();
+// Kiểm tra mỗi phút để tự chuyển sang ngày mới lúc 3h sáng nếu trang vẫn đang mở
+setInterval(attachDailyAddCountListener, 60 * 1000);
 
 function showToast(msg, isError = false, isSuccess = false, isWarning = false, duration = 10000, persistent = false) {
   const toast = document.getElementById('customToast');
@@ -382,6 +411,9 @@ document.getElementById('addListButton').addEventListener('click', () => {
       document.getElementById('emailListInput').value = '';
       emailMap = updatedMap;
       updateCount();
+      if (addedCount > 0) {
+        dailyAddCountRef.child(getDailyKey()).transaction(cur => (cur || 0) + addedCount);
+      }
     }
   });
 });
@@ -490,17 +522,6 @@ document.getElementById('copyButton').addEventListener('click', () => {
   }).finally(() => {
     copyButton.disabled = false;
     copyButton.textContent = "📋 Lấy & Copy Email";
-  });
-});
-
-document.getElementById('clearLogsButton').addEventListener('click', () => {
-  copyLogsRef.set(null, (error) => {
-    if (error) {
-      showToast('⚠️ Lỗi khi xóa log copy.', true);
-    } else {
-      resetBody();
-      showToast('✅ Đã xóa toàn bộ log copy.', false, true);
-    }
   });
 });
 
